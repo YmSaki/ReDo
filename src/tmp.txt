@@ -1,0 +1,1454 @@
+// src/redo/child.ts
+// JSXの子要素として受け入れ可能な型定義
+
+import { JSXNode } from "./jsx-node";
+
+/**
+ * JSXの子要素をh()で正規化したときに使用される型
+ * - プリミティブ値（string, number
+ * - JSXNode（JSXから変換されたNode）
+ * - JSXChild[]（配列のネスト）
+ */
+export type JSXChild =
+	| string
+	| number
+	| boolean
+	| JSXNode
+	| JSXChild[]
+	| undefined
+	| null;
+// src/redo/component.ts
+// UI部品を定義するための関数の型
+
+import type { JSXNode } from "./jsx-node";
+import { BaseProps, LifecycleProps } from "./props";
+
+/**
+ * UI部品を定義するための関数の型
+ * propsを受け取り、JSXNodeを返す純粋な関数
+ *
+ * @template P - propsの型（デフォルトはany）
+ * @example
+ * // サンプル: 文字を表示するためのUI部品
+ * const Greeting: Component<{ name: string }> = (props) => {
+ *   return <div>Hello {props.name}</div>;
+ * };
+ */
+export type Component<P = any> = (props: P & BaseProps & LifecycleProps) => JSXNode;
+// constants.ts
+// VNodeの特殊な型を表すシンボル定数
+
+/**
+ * Fragmentノードを表すシンボル
+ * Fragmentは複数の子要素をグループ化するが、DOM上には要素を生成しない
+ */
+export const FRAGMENT = Symbol("FRAGMENT");
+
+/**
+ * テキストノードを表すシンボル
+ * 文字列や数値がDOMのTextNodeとしてレンダリングされる
+ */
+export const TEXT = Symbol("TEXT");
+// src/redo/context.ts
+// イベントハンドラに渡されるContextクラス
+
+import type { ReDoEvent, ReDoAsync, AsyncRouting } from "./event";
+import { enqueue, runAsync, cancelTask } from "./queue";
+import { reRender } from "./core";
+
+/**
+ * イベントハンドラに渡されるコンテキストオブジェクト
+ * イベント間でのデータ受け渡しや、再レンダリング、非同期処理の制御を提供する
+ */
+export class EventContext<T> {
+	/** イベント間で受け渡されるペイロード */
+	constructor(public readonly payload?: T) { }
+
+	/**
+	 * 次のイベントをキューに追加する
+	 * @param event - 実行するイベント関数
+	 * @param overridePayload - ペイロードを上書きする場合に指定
+	 */
+	next<ANEXT_PAYLOAD>(event: ReDoEvent<ANEXT_PAYLOAD>, overridePayload?: ANEXT_PAYLOAD) {
+		enqueue(event as ReDoEvent<unknown>, overridePayload);
+	}
+
+	/**
+	 * 非同期タスクを実行する
+	 * @param task - 実行する非同期関数
+	 * @param initialPayload - 初期ペイロード
+	 * @param routing - 成功/失敗時に実行するイベントのルーティング
+	 * @returns タスクID（キャンセル用）
+	 */
+	run<PAYLOAD, RESULT>(
+		task: ReDoAsync<PAYLOAD, RESULT>,
+		initialPayload?: PAYLOAD,
+		routing?: AsyncRouting<RESULT>,
+	): number {
+		return runAsync(task, initialPayload, routing);
+	}
+
+	/**
+	 * 実行中の非同期タスクをキャンセルする
+	 * @param taskId - run()で返されたタスクID
+	 */
+	cancel(taskId: number) {
+		cancelTask(taskId);
+	}
+
+	/**
+	 * デバッグ用のログ出力
+	 * @param msg - ログメッセージ
+	 */
+	log(msg: string) {
+		console.log("[ReDo] " + msg);
+	}
+
+	/**
+	 * アプリケーション全体を再レンダリングする
+	 */
+	reRender() {
+		reRender();
+	}
+}
+
+export class AsyncContext<T> {
+	constructor(public readonly payload?: T) { }
+
+	/**
+	 * デバッグ用のログ出力
+	 * @param msg - ログメッセージ
+	 */
+	log(msg: string) {
+		console.log("[ReDo] " + msg);
+	}
+}
+// src/redo/core.ts
+// アプリケーションの初期化と再レンダリング機能
+
+import { render } from "./render";
+import { h } from "./h";
+import type { Component } from "./component";
+import { VNode } from "./vnode";
+import { patch } from "./patch";
+
+/**
+ * ReDoアプリケーションインスタンス
+ * init()から返され、そのアプリ固有のreRender()を提供する
+ */
+export type App = {
+	reRender: () => void;
+};
+
+// 最後にinitされたApp（後方互換用）
+let lastApp: App | null = null;
+
+/**
+ * ReDoアプリケーションを初期化する
+ * @param component - ルートコンポーネント関数
+ * @param container - マウント先のDOM要素
+ * @returns Appインスタンス
+ */
+export const init = (component: Component, container: HTMLElement): App => {
+	// クロージャで各Appの状態を保持
+	let oldVNode: VNode | null = null;
+
+	const appReRender = () => {
+		// コンポーネントをJSXNodeに変換
+		const generatedVNode = h(component, {});
+		// コンポーネント関数を再帰的に解決してVNodeツリーを生成
+		const newVNode = render(generatedVNode);
+
+		// 差分検出してDOM更新
+		patch(container, oldVNode, newVNode);
+		// 次回の差分検出のために保存
+		oldVNode = newVNode;
+
+		console.log("[ReDo] reRender");
+	};
+
+	const app: App = { reRender: appReRender };
+
+	// 後方互換のために最後のAppを保持
+	lastApp = app;
+
+	// 初回レンダリング
+	appReRender();
+
+	return app;
+};
+
+/**
+ * アプリケーション全体を再レンダリングする（後方互換用）
+ * 最後にinitされたAppのreRender()を呼び出す
+ */
+export const reRender = () => {
+	if (lastApp) {
+		lastApp.reRender();
+	}
+};
+// src/redo/diff.ts
+
+// VNode間の差分を検出してDOMを差分更新する
+// TODO: 実装
+// src/redo/domeventmanager.ts
+// DOMイベントマネージャー
+import { ReDoEvent, ReDoAsync } from "./event";
+import { enqueue, runAsync } from "./queue";
+
+type ReDoHTMLElement = HTMLElement & {
+	_eventListener?: Record<string, EventListener>;
+	_eventHandler?: Record<string, Function>;
+}
+
+export const updateEvent = (
+	el: HTMLElement,
+	eventName: string,
+	oldHandler: Function | undefined,
+	newHandler: Function | undefined,
+) => {
+	const element = el as ReDoHTMLElement;
+	const lowerName = eventName.slice(2).toLowerCase();
+
+	// 初期化
+	if (!element._eventHandler) element._eventHandler = {};
+	if (!element._eventListener) element._eventListener = {};
+
+	// 削除
+	if (!newHandler) {
+		const listener = element._eventListener[lowerName];
+		if (listener) {
+			element.removeEventListener(lowerName, listener);
+			delete element._eventListener[lowerName];
+			delete element._eventHandler[lowerName];
+		}
+		return;
+	}
+
+	// 更新
+	element._eventHandler[lowerName] = newHandler;
+	if (!element._eventListener[lowerName]) {
+		const proxyListener = (event: Event) => {
+			const handler = element._eventHandler?.[lowerName];
+			if (handler) {
+				const isAsync = handler.constructor.name === "AsyncFunction";
+				if (isAsync) {
+					runAsync(handler as ReDoAsync<Event, unknown>, event);
+				} else {
+					enqueue(handler as ReDoEvent<Event>, event);
+				}
+			}
+		}
+		element._eventListener[lowerName] = proxyListener;
+		element.addEventListener(lowerName, proxyListener);
+	}
+}
+// src/redo/event.ts
+// イベントハンドラの型定義
+
+import type { AsyncContext, EventContext } from "./context";
+
+/**
+ * 同期イベントハンドラの型（UI層）
+ * - DOM操作や状態更新など、軽量で即座に完了する処理に使用
+ * - async/awaitは使用不可（型定義で強制）
+ * - イベントキューで順序保証されて実行される
+ */
+export type ReDoEvent<T = void> = (ctx: EventContext<T>) => void;
+
+/**
+ * 非同期イベントハンドラの型（ロジック層）
+ * - API呼び出しや重いデータ処理に使用
+ * - 将来的にWeb Workerで実行される予定
+ * - DOM操作は禁止（Worker環境ではDOMにアクセスできないため）
+ *
+ * @template T - 非同期処理の戻り値の型
+ */
+export type ReDoAsync<TPayload = void, TResult = unknown> = (ctx: AsyncContext<TPayload>) => Promise<TResult>;
+
+/**
+ * 非同期タスクの完了時に実行するイベントのルーティング
+ */
+export type AsyncRouting<TResult = unknown, TError = Error> = {
+	/** タスクが成功した時に実行するイベント（結果がpayloadに渡される） */
+	success?: ReDoEvent<TResult>;
+	/** タスクが失敗した時に実行するイベント（エラーがpayloadに渡される） */
+	fail?: ReDoEvent<TError>;
+};
+// src/redo/h.ts
+// JSX変換関数（クラシックJSX変換）
+
+import type { JSXNode, JSXNodeChild } from "./jsx-node";
+import type { Component } from "./component";
+import type { JSXChild } from "./child";
+import { FRAGMENT } from "./constants";
+import { VNode } from "./vnode";
+
+
+/**
+ * JSXをJSXNodeオブジェクトに変換する関数
+ * Vite/SWCによってJSXが自動的にこの関数呼び出しに変換される
+ *
+ * @param type - 要素の型（HTML要素名、シンボル、またはコンポーネント関数）
+ * @param props - 要素の属性
+ * @param children - 子要素（可変長引数）
+ * @returns JSXNode オブジェクト
+ *
+ * @example
+ * // JSX: <div className="app">Hello</div>
+ * // 変換後: h("div", { className: "app" }, "Hello")
+ */
+// TODO: typeに応じて処理を分解する
+export function h(
+	type: string | typeof FRAGMENT | Component,
+	props: Record<string, unknown>,
+	...children: JSXChild[]
+): JSXNode {
+	const normalizedProps = props || {};
+
+	// idつきで かつ keyが未指定の場合は、idをkeyとしてフォールバックする
+	if (normalizedProps.key === undefined && normalizedProps.id !== undefined) {
+		normalizedProps.key = normalizedProps.id;
+	}
+
+	return {
+		type,
+		props: normalizedProps,
+		children: flat(children),
+	};
+}
+
+/**
+ * 子要素の配列を平坦化し、JSXNodeの配列に正規化する
+ * - null/undefined/boolean は除外される（レンダリングされない）
+ * - ネストした配列は再帰的に平坦化される
+ * - 文字列や数値はTEXTノードに変換される
+ *
+ * @param children - 正規化する子要素の配列
+ * @returns 平坦化されたJSXNodeの配列
+ */
+const flat = (children: JSXChild[]): JSXNodeChild[] => {
+	return children.flatMap((child) => {
+		return Array.isArray(child)
+			? flat(child)
+			: (
+				child == null || typeof child === "boolean"
+					? []
+					: [child]
+			);
+	});
+}
+
+/** Fragment（複数要素をグループ化するが、DOM要素を生成しない） */
+export { FRAGMENT as Fragment };
+// src/redo/index.ts
+// ReDo Framework - Public API
+// このファイルはReDoフレームワークの公開APIを定義します
+
+// === コア関数 ===
+/** アプリケーションの初期化 */
+export { init } from "./core";
+/** アプリケーションインスタンスの型 */
+export type { App } from "./core";
+
+// === JSX ===
+/** JSX変換関数とFragment */
+export { h, Fragment } from "./h";
+
+// === ヘルパー ===
+/** リスト要素の自動key付与 */
+export { List } from "./list";
+
+// === 型定義のエクスポート ===
+
+export type { Component } from "./component";
+export type { ReDoEvent as Event, ReDoAsync as Async } from "./event";
+export type { ComponentProps as Props } from "./props";
+export type { JSXChild as Child } from "./child";
+export type { EventContext as Context } from "./context";
+export type { ListProps } from "./list";
+
+// === 内部実装は非公開 ===
+// queue, mount, render, patch, constants などは内部実装のため公開していません
+// src/redo/jsx-node.ts
+// JSX変換後の中間表現の型定義
+
+import type { Component } from "./component";
+import { FRAGMENT } from "./constants";
+
+/**
+ * JSX変換後の中間表現（h関数の戻り値）
+ * - HTML要素、Fragment/TEXT、またはコンポーネント関数を表現
+ * - render関数によってVNodeに解決される
+ */
+export type JSXNode = {
+	/// 要素の型（コンポーネント関数）
+	// TODO: discriminated unionに分解
+	type: string | Component | typeof FRAGMENT;
+	/// 要素の属性
+	props: Record<string, unknown>;
+	/// 子要素の配列
+	children: JSXNodeChild[];
+};
+
+export type JSXNodeChild = JSXNode | string | number;
+// src/redo/jsx-runtime.ts
+// 新しいJSX変換（react-jsx）用のランタイム
+// 注意: ReDoは現在クラシックJSX変換（h関数）を使用しているため、このファイルは使用されません
+// VSCodeのエラー回避のために存在しています
+
+/**
+ * @deprecated ReDoではクラシックJSX変換を使用しています
+ */
+export const jsx = () => { };
+
+/**
+ * @deprecated ReDoではクラシックJSX変換を使用しています
+ */
+export const jsxs = () => { };
+
+/**
+ * @deprecated ReDoではクラシックJSX変換を使用しています（h.tsのFragmentを使用してください）
+ */
+export const Fragment = () => { };
+// src/redo/jsx.d.ts
+// TypeScriptのJSX型定義
+
+/**
+ * JSX名前空間の型定義
+ * TypeScriptがJSXの型チェックを行うために必要
+ */
+declare namespace JSX {
+	/**
+	 * HTML要素の共通属性
+	 * W3C HTML Living Standard に基づく
+	 * @see https://html.spec.whatwg.org/multipage/
+	 */
+	interface HTMLAttributes {
+		// === グローバル属性 (W3C HTML Living Standard) ===
+
+		/**
+		 * 要素の一意な識別子
+		 * @see https://html.spec.whatwg.org/multipage/dom.html#the-id-attribute
+		 */
+		id?: string;
+
+		/**
+		 * 要素に適用するCSSクラス名（スペース区切りで複数指定可能）
+		 * @see https://html.spec.whatwg.org/multipage/dom.html#classes
+		 */
+		class?: string;
+
+		/**
+		 * classの代替名（React互換性のため提供）
+		 * @deprecated W3C仕様では "class" が正式名称。パフォーマンス向上のため class の使用を推奨
+		 */
+		className?: string;
+
+		/**
+		 * インラインCSSスタイル（文字列またはオブジェクト形式）
+		 * @see https://html.spec.whatwg.org/multipage/dom.html#the-style-attribute
+		 */
+		style?: string | Partial<CSSStyleDeclaration>;
+
+		/**
+		 * 要素を非表示にするboolean属性
+		 * @see https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute
+		 */
+		hidden?: boolean;
+
+		/**
+		 * 要素に関する助言情報（ツールチップとして表示される）
+		 * @see https://html.spec.whatwg.org/multipage/dom.html#the-title-attribute
+		 */
+		title?: string;
+
+		/**
+		 * 要素の言語コード（BCP 47形式: "ja", "en-US" など）
+		 * @see https://html.spec.whatwg.org/multipage/dom.html#the-lang-and-xml:lang-attributes
+		 */
+		lang?: string;
+
+		/**
+		 * タブキーによるフォーカス順序（正の整数、0、-1）
+		 * @see https://html.spec.whatwg.org/multipage/interaction.html#attr-tabindex
+		 */
+		tabIndex?: number;
+
+		/**
+		 * 要素のテキスト方向（"ltr" | "rtl" | "auto"）
+		 * @see https://html.spec.whatwg.org/multipage/dom.html#the-dir-attribute
+		 */
+		dir?: "ltr" | "rtl" | "auto";
+
+		// === フォーム関連属性 ===
+
+		/**
+		 * フォーム要素の現在値
+		 * @see https://html.spec.whatwg.org/multipage/input.html#attr-input-value
+		 */
+		value?: string | number | readonly string[];
+
+		/**
+		 * チェックボックス・ラジオボタンのチェック状態
+		 * @see https://html.spec.whatwg.org/multipage/input.html#attr-input-checked
+		 */
+		checked?: boolean;
+
+		/**
+		 * フォーム要素の無効化（ユーザー操作を受け付けない）
+		 * @see https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-disabled
+		 */
+		disabled?: boolean;
+
+		/**
+		 * input要素の種類（"text" | "password" | "email" など）
+		 * @see https://html.spec.whatwg.org/multipage/input.html#attr-input-type
+		 */
+		type?: string;
+
+		/**
+		 * 入力欄のプレースホルダーテキスト（入力のヒント）
+		 * @see https://html.spec.whatwg.org/multipage/input.html#attr-input-placeholder
+		 */
+		placeholder?: string;
+
+		/**
+		 * フォーム要素の名前（送信時のキー名）
+		 * @see https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-name
+		 */
+		name?: string;
+
+		// === ReDo拡張 ===
+
+		/**
+		 * 任意の属性やイベントハンドラを許可
+		 * ReDoは「海賊船」哲学に基づき、柔軟性を重視してindex signatureを許可
+		 */
+		[key: string]: any;
+	}
+
+	/**
+	 * 組み込みHTML要素の型定義
+	 * W3C HTML Living Standard で定義される要素
+	 * @see https://html.spec.whatwg.org/multipage/
+	 */
+	interface IntrinsicElements {
+		// === コンテンツ区分 (Content sectioning) ===
+
+		/** 汎用コンテナ（ブロックレベル） */
+		div: HTMLAttributes;
+
+		/** 汎用コンテナ（インラインレベル） */
+		span: HTMLAttributes;
+
+		/** 段落 */
+		p: HTMLAttributes;
+
+		/** 見出しレベル1（最も重要） */
+		h1: HTMLAttributes;
+
+		/** 見出しレベル2 */
+		h2: HTMLAttributes;
+
+		/** 見出しレベル3 */
+		h3: HTMLAttributes;
+
+		/** 見出しレベル4 */
+		h4: HTMLAttributes;
+
+		/** 見出しレベル5 */
+		h5: HTMLAttributes;
+
+		/** 見出しレベル6（最も重要度が低い） */
+		h6: HTMLAttributes;
+
+		/** ヘッダー領域 */
+		header: HTMLAttributes;
+
+		/** フッター領域 */
+		footer: HTMLAttributes;
+
+		/** ナビゲーション領域 */
+		nav: HTMLAttributes;
+
+		/** メインコンテンツ領域 */
+		main: HTMLAttributes;
+
+		/** 独立したセクション */
+		section: HTMLAttributes;
+
+		/** 独立した記事コンテンツ */
+		article: HTMLAttributes;
+
+		/** 補足コンテンツ */
+		aside: HTMLAttributes;
+
+		// === テキストコンテンツ ===
+
+		/** 順序なしリスト */
+		ul: HTMLAttributes;
+
+		/** 順序付きリスト */
+		ol: HTMLAttributes;
+
+		/** リスト項目 */
+		li: HTMLAttributes;
+
+		/** 定義リスト */
+		dl: HTMLAttributes;
+
+		/** 定義リストの用語 */
+		dt: HTMLAttributes;
+
+		/** 定義リストの説明 */
+		dd: HTMLAttributes;
+
+		/** 整形済みテキスト */
+		pre: HTMLAttributes;
+
+		/** コードブロック */
+		code: HTMLAttributes;
+
+		/** 引用ブロック */
+		blockquote: HTMLAttributes;
+
+		// === インラインテキストセマンティクス ===
+
+		/**
+		 * ハイパーリンク
+		 * @property href - リンク先URL
+		 * @property target - リンクを開く場所（_blank, _self など）
+		 * @property rel - リンクの関係性（noopener, noreferrer など）
+		 */
+		a: HTMLAttributes & { href?: string; target?: string; rel?: string };
+
+		/** 強調（視覚的に太字） */
+		strong: HTMLAttributes;
+
+		/** 強調（視覚的に斜体） */
+		em: HTMLAttributes;
+
+		/** 小さいテキスト */
+		small: HTMLAttributes;
+
+		/** 打ち消し線 */
+		s: HTMLAttributes;
+
+		/** 下線 */
+		u: HTMLAttributes;
+
+		/** 改行 */
+		br: HTMLAttributes;
+
+		// === 画像・メディア ===
+
+		/**
+		 * 画像
+		 * @property src - 画像ファイルのURL
+		 * @property alt - 代替テキスト（アクセシビリティ上必須）
+		 * @property width - 幅
+		 * @property height - 高さ
+		 */
+		img: HTMLAttributes & { src?: string; alt?: string; width?: string | number; height?: string | number };
+
+		/**
+		 * 動画
+		 * @property src - 動画ファイルのURL
+		 * @property controls - コントロールバーの表示
+		 * @property autoplay - 自動再生
+		 * @property loop - ループ再生
+		 */
+		video: HTMLAttributes & { src?: string; controls?: boolean; autoplay?: boolean; loop?: boolean };
+
+		/**
+		 * 音声
+		 * @property src - 音声ファイルのURL
+		 * @property controls - コントロールバーの表示
+		 * @property autoplay - 自動再生
+		 * @property loop - ループ再生
+		 */
+		audio: HTMLAttributes & { src?: string; controls?: boolean; autoplay?: boolean; loop?: boolean };
+
+		// === フォーム要素 ===
+
+		/**
+		 * フォーム
+		 * @property action - 送信先URL
+		 * @property method - 送信方式（GET | POST）
+		 */
+		form: HTMLAttributes & { action?: string; method?: string };
+
+		/** 入力欄 */
+		input: HTMLAttributes;
+
+		/**
+		 * 複数行テキスト入力
+		 * @property rows - 行数
+		 * @property cols - 列数
+		 */
+		textarea: HTMLAttributes & { rows?: number; cols?: number };
+
+		/**
+		 * ボタン
+		 * @property type - ボタンの種類（button | submit | reset）
+		 */
+		button: HTMLAttributes & { type?: "button" | "submit" | "reset" };
+
+		/**
+		 * 選択リスト
+		 * @property multiple - 複数選択を許可
+		 */
+		select: HTMLAttributes & { multiple?: boolean };
+
+		/**
+		 * 選択リストの項目
+		 * @property value - 送信される値
+		 * @property selected - 初期選択状態
+		 */
+		option: HTMLAttributes & { value?: string; selected?: boolean };
+
+		/**
+		 * ラベル（フォーム要素の説明）
+		 * @property htmlFor - 関連付けるフォーム要素のid
+		 */
+		label: HTMLAttributes & { htmlFor?: string };
+
+		// === テーブル ===
+
+		/** テーブル */
+		table: HTMLAttributes;
+
+		/** テーブルヘッダー行グループ */
+		thead: HTMLAttributes;
+
+		/** テーブルボディ行グループ */
+		tbody: HTMLAttributes;
+
+		/** テーブルフッター行グループ */
+		tfoot: HTMLAttributes;
+
+		/** テーブル行 */
+		tr: HTMLAttributes;
+
+		/** テーブルヘッダーセル */
+		th: HTMLAttributes;
+
+		/** テーブルデータセル */
+		td: HTMLAttributes;
+
+		// === Web Components / カスタム要素 ===
+
+		/**
+		 * 未定義のタグも許容（Web Components、カスタム要素用）
+		 * 柔軟性重視のため存在する。
+		 */
+		[elemName: string]: HTMLAttributes;
+	}
+
+	/**
+	 * JSX式が返す要素の型
+	 */
+	type Element = import("./jsx-node").JSXNode;
+}
+// src/redo/lifecycle.ts
+// コンポーネントのライフサイクルイベントの型定義
+
+import { ReDoEvent } from "./event";
+
+export type LifecycleEvent = ReDoEvent<HTMLElement | Text>;
+
+export type ReDoLifecycleEventsKey = "onMount" | "onUnmount" | "onUpdate";
+// src/redo/list.ts
+// リストレンダリングを効率化・自動化するヘルパー
+
+import { h, Fragment } from "./h";
+import type { JSXNode } from "./jsx-node";
+
+// オブジェクト参照用のレジストリ (WeakMapはメモリリークしないのでグローバルでOK)
+const objectKeyRegistry = new WeakMap<object, string>();
+let uniqueIdCounter = 0;
+
+/**
+ * オブジェクト用: 参照ベースの不変IDを取得
+ */
+const getObjectKey = (item: object): string => {
+	const existingKey = objectKeyRegistry.get(item);
+	if (existingKey) return existingKey;
+
+	const newKey = `ref-${++uniqueIdCounter}`;
+	objectKeyRegistry.set(item, newKey);
+	return newKey;
+};
+
+export type ListProps<T> = {
+	/** レンダリングする配列 */
+	items: T[];
+	/** 各要素のレンダリング関数 */
+	renderItem: (item: T, index: number) => JSXNode;
+	/** オプション: keyを明示的に指定する関数 */
+	keyExtractor?: (item: T) => string | number;
+};
+
+/**
+ * スマートなListコンポーネント
+ * オブジェクトには参照IDを、プリミティブには値ベースのIDを自動付与する
+ *
+ * - オブジェクト型: WeakMapでオブジェクトの同一性を追跡してkeyを自動生成
+ * - プリミティブ型: 値ベース + 重複連番IDでkeyを生成（例: "100", "100_1"）
+ * - keyExtractorを指定した場合: 明示的なkey生成関数を使用
+ *
+ * @example
+ * // オブジェクト配列（自動key）
+ * <List items={users} renderItem={(user) => <UserCard user={user} />} />
+ *
+ * @example
+ * // 明示的なkey指定
+ * <List
+ *   items={users}
+ *   renderItem={(user) => <UserCard user={user} />}
+ *   keyExtractor={(user) => user.id}
+ * />
+ *
+ * @example
+ * // プリミティブ配列（値ベース + 連番）
+ * <List items={["a", "b", "a"]} renderItem={(str) => <div>{str}</div>} />
+ * // → key: "a", "b", "a_1"
+ */
+export const List = <T>({ items, renderItem, keyExtractor }: ListProps<T>): JSXNode => {
+	// プリミティブ値の重複出現回数を記録するマップ (レンダリングのたびにリセット)
+	// これにより [100, 100] のような重複データでも "100", "100_1" と一意になる
+	const primitiveCount = new Map<string | number | boolean, number>();
+
+	const nodes = items.map((item, index) => {
+		const vnode = renderItem(item, index);
+		let key: string | number;
+
+		if (keyExtractor) {
+			// ユーザー指定があれば最優先
+			key = keyExtractor(item);
+		} else if (typeof item === 'object' && item !== null) {
+			// オブジェクトならWeakMap (参照が変わらない限りKeyは不変)
+			key = getObjectKey(item);
+		} else {
+			// プリミティブ型の自動生成ロジック
+			// 値そのものをベースにするが、重複がある場合はサフィックスをつける
+			const val = item as string | number | boolean;
+			const count = primitiveCount.get(val) || 0;
+
+			// "val" または "val_1", "val_2"...
+			key = count === 0 ? String(val) : `${val}_${count}`;
+
+			primitiveCount.set(val, count + 1);
+		}
+
+		// VNodeにKeyを注入
+		vnode.props.key = key;
+
+		return vnode;
+	});
+
+	return h(Fragment, {}, ...nodes);
+};
+// src/redo/mount.ts
+// VNodeから実際のDOM要素を生成する
+
+import { FRAGMENT, TEXT } from "./constants"
+import { updateEvent } from "./domeventmanager";
+import { enqueue } from "./queue";
+import type { VNode } from "./vnode";
+
+/**
+ * VNodeから実際のDOM要素を生成して親要素に追加する
+ *
+ * @param vnode - マウントするVNode
+ * @param parent - 親となるDOM要素
+ * @returns 生成されたDOM要素（FragmentやnullVNodeの場合はnull）
+ */
+export function mount(vnode: VNode | null, parent: HTMLElement | null): HTMLElement | Text | null {
+	// null VNodeは何も生成しない
+	if (!vnode) {
+		return null;
+	}
+
+	// Fragmentは子要素のみをマウント（DOM要素を作らない）
+	if (vnode.type === FRAGMENT) {
+		vnode.children.forEach((child: VNode) => mount(child, parent));
+		return null;
+	}
+
+	// テキストノードを生成
+	if (vnode.type === TEXT) {
+		const el = document.createTextNode(String(vnode.props.nodeValue));
+		if (parent) {
+			parent.appendChild(el);
+		}
+
+		vnode.dom = el; // 差分検出用にDOM参照を保存
+
+		// onMountを起動する
+		if (vnode.props.onMount) {
+			enqueue(vnode.props.onMount, el);
+		}
+
+		return el;
+	}
+
+	// HTML要素を生成
+	const el = document.createElement(vnode.type as string);
+	vnode.dom = el; // 差分検出用にDOM参照を保存
+
+	// 属性とイベントハンドラを設定
+	for (const key in vnode.props) {
+		const value = vnode.props[key];
+		if (key === "children") {
+			continue;
+		}
+
+		if (key === "style" && typeof value === "object" && value !== null) {
+			Object.assign(el.style, value);
+			continue;
+		}
+
+		// イベントハンドラ（onXxx）の処理
+		if (key.startsWith("on") && typeof value === "function") {
+			updateEvent(el, key, undefined, value);
+			continue;
+		}
+
+		// 通常の属性を設定
+		el.setAttribute(key, String(value));
+	}
+
+	// 子要素を再帰的にマウント
+	vnode.children.forEach((child: VNode) => mount(child, el));
+	if (parent) {
+		parent.appendChild(el);
+	}
+
+	// onMountを起動する
+	if (vnode.props.onMount) {
+		enqueue(vnode.props.onMount, el);
+	}
+
+	return el;
+}
+// src/redo/patch.ts
+// VNode間の差分を検出してDOMを効率的に更新する
+
+import { TEXT } from "./constants";
+import { mount } from "./mount";
+import { ComponentProps } from "./props";
+import { enqueue } from "./queue";
+import type { VNode } from "./vnode";
+import { updateEvent } from "./domeventmanager";
+import { ReDoEvent } from "./event";
+
+/**
+ * 旧VNodeと新VNodeを比較してDOMを差分更新する
+ * フォーカスやスクロール位置を維持しながら、変更のあった部分のみを更新する
+ *
+ * @param parent - 親となるDOM要素
+ * @param oldVNode - 前回レンダリング時のVNode
+ * @param newVNode - 今回レンダリングするVNode
+ * @param index - 子要素のインデックス（内部用）
+ * @returns 更新されたDOM要素
+ */
+export function patch(
+	parent: HTMLElement,
+	oldVNode: VNode | null,
+	newVNode: VNode | null
+): HTMLElement | Text | null {
+	// Case 1: Delete - 新VNodeがnull → 要素を削除
+	if (!newVNode) {
+		if (oldVNode?.dom) {
+			invokeUnmount(oldVNode);
+			oldVNode.dom.remove();
+		}
+		return null;
+	}
+
+	// Case 2: Insert - 旧VNodeがnull → 新規マウント
+	if (!oldVNode) {
+		return mount(newVNode, parent);
+	}
+
+	// Case 3: Replace - 型が変わった → 要素を置き換え
+	if (oldVNode.type !== newVNode.type) {
+		const newDOM = mount(newVNode, null);
+		if (newDOM && oldVNode.dom) {
+			invokeUnmount(oldVNode);
+			oldVNode.dom.replaceWith(newDOM);
+		}
+
+		invokeUpdate(newVNode);
+		return newDOM;
+	}
+
+	// Case 4: Update - 同じ要素 → DOM参照を引き継ぐ
+	const element = (newVNode.dom = oldVNode.dom!) as HTMLElement;
+
+	// Case 5: Update - テキストノード → 内容が変わっていれば更新
+	if (newVNode.type == TEXT) {
+		if (oldVNode.props.nodeValue !== newVNode.props.nodeValue) {
+			element.nodeValue = String(newVNode.props.nodeValue);
+		}
+		invokeUpdate(newVNode);
+		return element;
+	}
+
+	// Case 6: Update - HTML要素 → 属性と子要素を差分更新
+	patchProps(element, oldVNode.props, newVNode.props);
+
+	// 子要素を再帰的に差分更新
+	patchChildren(element, oldVNode.children, newVNode.children);
+
+	invokeUpdate(newVNode);
+
+	return element;
+}
+
+/**
+ * 要素の属性（props）を差分更新する
+ * 変更があった属性のみを更新し、削除された属性を削除する
+ *
+ * @param element - 更新対象のDOM要素
+ * @param oldProps - 前回の属性
+ * @param newProps - 今回の属性
+ */
+function patchProps(element: HTMLElement, oldProps: ComponentProps, newProps: ComponentProps) {
+	// 新しい属性を追加/更新
+	for (const key in newProps) {
+		if (key === "children") {
+			continue;
+		}
+
+		const oldValue = oldProps[key];
+		const newValue = newProps[key];
+
+		// 値が変わっていなければスキップ
+		if (oldValue === newValue) {
+			continue;
+		}
+
+		// イベントハンドラ（onXxx）の差分更新
+		if (key.startsWith("on")) {
+			updateEvent(element, key, oldValue as Function, newValue as Function);
+		} else {
+			element.setAttribute(key, String(newValue));
+		}
+
+		// style属性の差分更新
+		if (key === "style") {
+			if (typeof newValue === "string") {
+				element.style.cssText = newValue;
+			}
+			else if (typeof newValue === "object" && newValue !== null) {
+				if (typeof oldValue === "object" && oldValue !== null) {
+					for (const sKey in oldValue) {
+						// @ts-ignore
+						if (!(sKey in newValue)) element.style[sKey] = "";
+					}
+				}
+
+				// 新しいスタイルを適用
+				for (const sKey in newValue) {
+					// @ts-ignore
+					element.style[sKey] = newValue[sKey];
+				}
+			}
+			continue;
+		}
+
+		// class / className の正規化
+		if (key === "className") {
+			element.setAttribute("class", String(newValue));
+			continue;
+		}
+
+		// それ以外は通常の属性として設定
+		// null/undefined/falseの場合は属性を削除（boolean属性対応）
+		if (newValue == null || newValue === false) {
+			element.removeAttribute(key);
+		} else {
+			// trueの場合は属性名のみ設定（<input disabled />）
+			const attrValue = newValue === true ? "" : String(newValue);
+			element.setAttribute(key, attrValue);
+		}
+	}
+
+	// 削除された属性を除去
+	for (const key in oldProps) {
+		if (key === "children") {
+			continue;
+		}
+		if (!(key in newProps)) {
+			if (key.startsWith("on")) {
+				updateEvent(element, key, oldProps[key] as Function, undefined);
+			} else {
+				element.removeAttribute(key);
+			}
+		}
+	}
+}
+
+function patchChildren(parent: HTMLElement, oldChildren: VNode[], newChildren: VNode[]) {
+	const oldMap = new Map<string | number, VNode>();
+	const oldUnKeyd: VNode[] = [];
+
+	oldChildren.forEach((child) => {
+		if (child.key != null) {
+			oldMap.set(child.key, child);
+		} else {
+			oldUnKeyd.push(child);
+		}
+	});
+
+	let unKeydIndex = 0;
+
+	newChildren.forEach((child, index) => {
+		let oldChild: VNode | undefined;
+		if (child.key != null) {
+			oldChild = oldMap.get(child.key);
+			if (oldChild) {
+				oldMap.delete(child.key);
+			}
+		} else {
+			if (unKeydIndex < oldUnKeyd.length) {
+				oldChild = oldUnKeyd[unKeydIndex];
+				unKeydIndex++;
+			}
+
+		}
+
+		if (oldChild) {
+			// 一致する場合
+			patch(parent, oldChild, child);
+			oldMap.delete(child.key!);
+
+			if (child.key != null) {
+				// 移動しただけの場合
+				const currentDom = child.dom;
+				const refNode = parent.childNodes[index];
+
+				if (currentDom && refNode && currentDom !== refNode) {
+					// insertBeforeで移動も兼ねる
+					parent.insertBefore(currentDom, refNode);
+				}
+			}
+		} else {
+			// 新規作成が必要
+			const newDom = mount(child, null);
+			if (newDom) {
+				const referenceNode = parent.childNodes[index] || null;
+				parent.insertBefore(newDom, referenceNode);
+			}
+		}
+	});
+
+	// 余りを消す
+	oldMap.forEach((child) => {
+		invokeUnmount(child);
+		child.dom?.remove();
+	});
+	while (unKeydIndex < oldUnKeyd.length) {
+		const child = oldUnKeyd[unKeydIndex];
+		invokeUnmount(child);
+		child.dom?.remove();
+		unKeydIndex++;
+	}
+}
+
+function invokeUpdate(vnode: VNode) {
+	if (vnode.props.onUpdate) {
+		enqueue(vnode.props.onUpdate, vnode.dom!);
+	}
+}
+
+function invokeUnmount(vnode: VNode) {
+	if (vnode.props.onUnmount) {
+		enqueue(vnode.props.onUnmount, vnode.dom!);
+	}
+	vnode.children.forEach((child) => invokeUnmount(child));
+}
+// src/redo/props.ts
+// コンポーネントや要素の属性（props）の型定義
+
+import { ReDoEvent } from "./event";
+import { JSXNode } from "./jsx-node";
+import { LifecycleEvent } from "./lifecycle";
+
+export type BaseProps = {
+	/**
+	 * 差分検知用
+	 */
+	key?: string | number;
+	/**
+	 * 子要素
+	 */
+	children?: JSXNode[];
+}
+
+export type LifecycleProps = {
+	/**
+	 * マウント時イベント
+	 */
+	onMount?: LifecycleEvent;
+
+	/**
+	 * 表示更新時イベント
+	 * @experimental
+	 */
+	onUpdate?: LifecycleEvent;
+
+	/**
+	 * マウント解除時イベント
+	 * @experimental
+	 */
+	onUnmount?: LifecycleEvent;
+}
+
+/**
+ * VNodeの属性の型
+ */
+export type VNodeProps = {
+	/**
+	 * 任意の属性名と値
+	 */
+	[key: string]: string | number | boolean | Function | ReDoEvent<unknown> | undefined;
+} & LifecycleProps;
+
+/**
+ * コンポーネントの属性の型
+ * - children: 子要素
+ * - その他の任意の属性を許容する
+ * 
+ * TODO: childrenの型と責務を再設計する
+ * @internal
+ */
+export type ComponentProps<P = {}> = BaseProps & LifecycleProps & P & {
+	/// 任意の属性名と値
+	[key: string]: unknown;
+};
+// src/redo/queue.ts
+// イベントキューシステムと非同期タスク管理
+
+import { EventContext, AsyncContext } from "./context";
+import type { ReDoEvent, ReDoAsync, AsyncRouting } from "./event";
+
+/**
+ * イベントキューのアイテム
+ */
+export type QueueItem = {
+	event: ReDoEvent<any>;
+	payload: any;
+};
+
+// イベントキュー（同期イベントをバッチ処理するための配列）
+const eventQueue: QueueItem[] = [];
+// 非同期タスク管理テーブル（タスクIDとキャンセル状態を管理）
+const taskTable = new Map<number, { canceled: boolean }>();
+
+// 非同期タスクに割り振るID（インクリメント）
+let taskIdCounter = 0;
+// イベントキューの実行中フラグ（再入防止用）
+let isFlushing = false;
+
+/**
+ * 同期イベントをキューに追加する
+ * イベントはマイクロタスクキューでバッチ処理され、順序保証されて実行される
+ *
+ * @param event - 実行する同期イベント関数
+ * @param payload - イベントに渡すデータ
+ */
+export const enqueue = <T>(event: ReDoEvent<T>, payload: T) => {
+	eventQueue.push({ event, payload });
+	scheduleFlush();
+}
+
+/**
+ * 非同期タスクを実行する
+ * 将来的にはWeb Workerで実行される予定
+ *
+ * @param asyncFn - 実行する非同期関数
+ * @param payload - 初期ペイロード
+ * @param routing - 成功/失敗時に実行するイベントのルーティング
+ * @returns タスクID（キャンセル用）
+ */
+export const runAsync = <P, R>(
+	asyncFn: ReDoAsync<P, R>,
+	payload?: P,
+	routing?: AsyncRouting<R>,
+): number => {
+	// タスクIDを発行してテーブルに登録
+	const taskId = ++taskIdCounter;
+	taskTable.set(taskId, { canceled: false });
+
+	const ctx = new AsyncContext(payload);
+
+	// 非同期関数を実行
+	asyncFn(ctx)
+		.then((result) => {
+			const record = taskTable.get(taskId);
+			// キャンセルされていたら何もしない
+			if (!record || record?.canceled) {
+				return;
+			}
+
+			// 成功時のイベントをキューに追加（UI層に戻る）
+			if (routing?.success) {
+				enqueue(routing.success, result);
+			}
+			taskTable.delete(taskId);
+		})
+		.catch((error) => {
+			const record = taskTable.get(taskId);
+			// キャンセルされていたら何もしない
+			if (!record || record?.canceled) {
+				return;
+			}
+			// 失敗時のイベントをキューに追加（UI層に戻る）
+			if (routing?.fail) {
+				enqueue(routing.fail, error);
+			}
+			taskTable.delete(taskId);
+		})
+
+	return taskId;
+}
+
+/**
+ * 実行中の非同期タスクをキャンセルする
+ * @param taskId - runAsync()で返されたタスクID
+ */
+export const cancelTask = (taskId: number) => {
+	const record = taskTable.get(taskId);
+	if (!record) {
+		return;
+	}
+	// キャンセルフラグを立てる（Promise完了時にチェックされる）
+	record.canceled = true;
+}
+
+/**
+ * イベントキューのフラッシュをマイクロタスクとしてスケジュールする
+ * Promise.resolve().then() を使うことで、同一タスク内の複数のイベントをバッチ処理する
+ */
+const scheduleFlush = () => {
+	Promise.resolve().then(flush);
+}
+
+/**
+ * イベントキューを実行する
+ * - 再入防止: 実行中に新たなイベントが追加されても、次のフレームで処理される
+ * - スナップショット方式: 実行中のイベントが新規イベントを追加しても、既存イベントには影響しない
+ */
+const flush = () => {
+	// 既に実行中なら何もしない（再入防止）
+	if (isFlushing) {
+		return;
+	}
+	isFlushing = true;
+
+	try {
+		// 現在のキューをスナップショット
+		const currentFrame = [...eventQueue];
+		eventQueue.length = 0;
+
+		// キュー内のイベントを順番に実行
+		for (const item of currentFrame) {
+			const ctx = new EventContext(item.payload);
+			item.event(ctx);
+		}
+	}
+	finally {
+		isFlushing = false;
+		// 実行中に新たなイベントが追加されていたら、次のフレームで実行
+		if (eventQueue.length > 0) {
+			scheduleFlush();
+		}
+	}
+}
+// src/redo/render.ts
+// JSXNodeをVNodeに解決する（コンポーネント関数を実行してツリーを展開）
+
+import { FRAGMENT, TEXT } from "./constants";
+import type { JSXNode } from "./jsx-node";
+import { VNodeProps } from "./props";
+import type { VNode } from "./vnode";
+
+/**
+ * JSXNodeを再帰的に解決してVNodeツリーを生成する
+ * コンポーネント関数が実行され、最終的にHTML要素とテキストノードのみのツリーになる
+ *
+ * @param node - 解決するJSXNode
+ * @returns 解決されたVNode
+ */
+export const render = (node: JSXNode | string | number): VNode => {
+	if (typeof node === "string" || typeof node === "number") {
+		return {
+			type: TEXT,
+			props: { nodeValue: node },
+			children: [],
+		};
+	}
+
+	const { children, key, ...props } = node.props;
+	const vKey = key as string | number | undefined;
+
+	if (node.type === FRAGMENT) {
+		return {
+			type: FRAGMENT,
+			props: {},
+			children: node.children.map(render),
+			key: vKey,
+		}
+	}
+
+	// コンポーネント関数の場合は実行して再帰的に解決
+	if (typeof node.type === "function") {
+		// propsにchildrenをマージして渡す
+		const result = node.type({
+			...node.props,
+			children: node.children,
+		})
+		const vResult = render(result);
+		vResult.key = vKey;
+		return vResult;
+	}
+
+	// TODO: 要検証
+	return {
+		type: node.type,
+		props: props as VNodeProps,
+		children: node.children.map(render),
+		key: vKey,
+	};
+}
+// redo/vnode.ts
+// Virtual DOMノードの型定義
+
+import { FRAGMENT, TEXT } from "./constants";
+import { ReDoLifecycleEventsKey } from "./lifecycle";
+import type { VNodeProps } from "./props";
+
+/**
+ * Virtual DOMノード（VNode）
+ * コンポーネント関数が解決された後の、実際にDOMとして生成される要素を表現する
+ * - HTML要素（"div", "span"など）
+ * - Fragment（Symbol）
+ * - テキストノード（TEXT Symbol）
+ * - Key属性 (ライフサイクルイベント, 文字列, 数値, null)
+ */
+export type VNode = {
+	/// 要素の型（HTML要素名またはシンボル）
+	type: string | typeof FRAGMENT | typeof TEXT;
+	/// 要素の属性
+	props: VNodeProps;
+	/// 子要素（すべて解決済みのVNode）
+	children: VNode[];
+	/// 対応する実際のDOM要素（差分検出用、mountまたはpatchで設定される）
+	dom?: HTMLElement | Text;
+	/// key属性
+	key?: string | number;
+};
