@@ -2,7 +2,7 @@
 // VNodeから実際のDOM要素を生成する
 
 import { FRAGMENT, TEXT } from "./constants"
-import { updateEvent } from "./domeventmanager";
+import { applyAttribute } from "./domattribute";
 import { enqueue } from "./queue";
 import type { VNode } from "./vnode";
 
@@ -46,26 +46,10 @@ export function mount(vnode: VNode | null, parent: HTMLElement | null): HTMLElem
 	const el = document.createElement(vnode.type as string);
 	vnode.dom = el; // 差分検出用にDOM参照を保存
 
-	// 属性とイベントハンドラを設定
+	// 属性とイベントハンドラを設定（patch.tsのpatchPropsと共通のロジックを使用）
+	// mount時は旧値が存在しないため oldValue = undefined として呼び出す
 	for (const key in vnode.props) {
-		const value = vnode.props[key];
-		if (key === "children") {
-			continue;
-		}
-
-		if (key === "style" && typeof value === "object" && value !== null) {
-			Object.assign(el.style, value);
-			continue;
-		}
-
-		// イベントハンドラ（onXxx）の処理
-		if (key.startsWith("on") && typeof value === "function") {
-			updateEvent(el, key, undefined, value);
-			continue;
-		}
-
-		// 通常の属性を設定
-		el.setAttribute(key, String(value));
+		applyAttribute(el, key, undefined, vnode.props[key]);
 	}
 
 	// 子要素を再帰的にマウント
