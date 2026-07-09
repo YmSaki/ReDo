@@ -4,6 +4,7 @@
 // 1つのpropに対してDOM操作が最大1系統になるよう、分岐は排他的（if/else + early return）にする。
 
 import { updateEvent } from "./domeventmanager";
+import { isLifecycleEventKey } from "./lifecycle";
 
 /**
  * 1つのprop値をDOM要素に反映する（追加・更新・削除を統一的に扱う）
@@ -13,13 +14,13 @@ import { updateEvent } from "./domeventmanager";
  *
  * 判定順序:
  *   1. children / key → 何もしない（属性ではない）
- *   2. onXxx かつ関数（ライフサイクルprops含む）→ updateEvent
- *      ※ onMount/onUpdate/onUnmount のenqueue処理はmount/patch側の既存ロジックのまま。
- *        ここではon*として扱う現状の挙動を維持する（updateEventへの誤登録問題はIssue #4）
- *   3. style → 文字列ならcssText、オブジェクトなら旧値との差分適用
- *   4. className → class属性として設定（className というliteral属性は作らない）
- *   5. boolean/null/undefined → true は空文字属性、false/null/undefinedは属性除去
- *   6. それ以外 → 通常のsetAttribute
+ *   2. onMount / onUpdate / onUnmount（ライフサイクルprops）→ 何もしない（属性でもDOMイベントでもない）
+ *      ※ enqueue処理はmount.ts / patch.tsの既存ロジックが直接行うため、ここでは一切触らない（Issue #4）
+ *   3. onXxx かつ関数 → updateEvent
+ *   4. style → 文字列ならcssText、オブジェクトなら旧値との差分適用
+ *   5. className → class属性として設定（className というliteral属性は作らない）
+ *   6. boolean/null/undefined → true は空文字属性、false/null/undefinedは属性除去
+ *   7. それ以外 → 通常のsetAttribute
  *
  * @param el - 対象のDOM要素
  * @param key - prop名
@@ -29,6 +30,12 @@ import { updateEvent } from "./domeventmanager";
 export function applyAttribute(el: HTMLElement, key: string, oldValue: unknown, newValue: unknown): void {
 	// children / key は属性ではないため無視
 	if (key === "children" || key === "key") {
+		return;
+	}
+
+	// onMount/onUpdate/onUnmount はDOMイベントリスナーではないため、
+	// updateEventに渡さずスキップする（発火はmount.ts/patch.tsが直接enqueueする）
+	if (isLifecycleEventKey(key)) {
 		return;
 	}
 
