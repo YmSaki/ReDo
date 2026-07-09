@@ -22,6 +22,10 @@ export { island, reRenderIsland } from "./island";
 /** 島ハンドルの型 */
 export type { IslandHandle } from "./island";
 
+// === コントローラ + this.reRender() パターン ===
+/** `reRender = () => reRenderIsland(this.View)` の1行ボイラープレートを更に1行にする薄いヘルパー */
+export { makeReRender } from "./controller";
+
 // === 型定義のエクスポート ===
 
 export type { Component } from "./component";
