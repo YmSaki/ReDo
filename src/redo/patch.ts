@@ -1,7 +1,7 @@
 // src/redo/patch.ts
 // VNode間の差分を検出してDOMを効率的に更新する
 
-import { TEXT } from "./constants";
+import { FRAGMENT, TEXT } from "./constants";
 import { mount } from "./mount";
 import { ComponentProps } from "./props";
 import { enqueue } from "./queue";
@@ -25,10 +25,11 @@ export function patch(
 	newVNode: VNode | null
 ): HTMLElement | Text | null {
 	// Case 1: Delete - 新VNodeがnull → 要素を削除
+	// Fragmentは自身のDOMを持たず複数のDOMを親に展開するため、collectDomsで全て取り除く
 	if (!newVNode) {
-		if (oldVNode?.dom) {
+		if (oldVNode) {
 			invokeUnmount(oldVNode);
-			oldVNode.dom.remove();
+			removeDoms(oldVNode);
 		}
 		return null;
 	}
@@ -39,15 +40,26 @@ export function patch(
 	}
 
 	// Case 3: Replace - 型が変わった → 要素を置き換え
+	// Fragment ⇔ 通常要素の入れ替えにも耐えるよう、DOMノードのリスト単位で差し替える
 	if (oldVNode.type !== newVNode.type) {
-		const newDOM = mount(newVNode, null);
-		if (newDOM && oldVNode.dom) {
-			invokeUnmount(oldVNode);
-			oldVNode.dom.replaceWith(newDOM);
-		}
+		invokeUnmount(oldVNode);
+
+		// 新VNodeをマウント（Fragmentなら複数DOM、通常要素なら単一DOMになる）
+		mount(newVNode, null);
+
+		// 旧DOMの先頭位置に新DOMを差し込んでから、旧DOMを取り除く
+		const ref = collectDoms(oldVNode)[0] ?? null;
+		collectDoms(newVNode).forEach((dom) => parent.insertBefore(dom, ref));
+		removeDoms(oldVNode);
 
 		invokeUpdate(newVNode);
-		return newDOM;
+		return newVNode.dom ?? null;
+	}
+
+	// Case 4a: Fragment - 自身のDOMを持たず、子を同じ実DOM親に対して差分更新する
+	if (newVNode.type === FRAGMENT) {
+		patchChildren(parent, oldVNode.children, newVNode.children);
+		return null;
 	}
 
 	// Case 4: Update - 同じ要素 → DOM参照を引き継ぐ
@@ -157,6 +169,18 @@ function patchProps(element: HTMLElement, oldProps: ComponentProps, newProps: Co
 	}
 }
 
+/**
+ * 子VNodeのリストをkeyed diffで差分更新する
+ *
+ * 実DOMの位置を「VNodeのインデックス == childNodesのインデックス」で決め打ちせず、
+ * 各VNodeが親に展開する実DOMノード（collectDoms）を基準に最終的な並びを組み立てる。
+ * これによりFragment（1VNodeが複数DOMを親に直接ぶら下げる）や、Fragmentと兄弟要素の
+ * 混在があっても位置がずれない。
+ *
+ * @param parent - 子が展開される実DOM親
+ * @param oldChildren - 前回の子VNode配列
+ * @param newChildren - 今回の子VNode配列
+ */
 function patchChildren(parent: HTMLElement, oldChildren: VNode[], newChildren: VNode[]) {
 	const oldMap = new Map<string | number, VNode>();
 	const oldUnKeyd: VNode[] = [];
@@ -171,56 +195,96 @@ function patchChildren(parent: HTMLElement, oldChildren: VNode[], newChildren: V
 
 	let unKeydIndex = 0;
 
-	newChildren.forEach((child, index) => {
+	// 1. 各newChildをoldChildに対応付けて patch もしくは mount する
+	//    （この時点では位置は気にせず、DOM参照が張られている状態にするだけ）
+	newChildren.forEach((child) => {
 		let oldChild: VNode | undefined;
 		if (child.key != null) {
 			oldChild = oldMap.get(child.key);
 			if (oldChild) {
 				oldMap.delete(child.key);
 			}
-		} else {
-			if (unKeydIndex < oldUnKeyd.length) {
-				oldChild = oldUnKeyd[unKeydIndex];
-				unKeydIndex++;
-			}
-
+		} else if (unKeydIndex < oldUnKeyd.length) {
+			oldChild = oldUnKeyd[unKeydIndex];
+			unKeydIndex++;
 		}
 
 		if (oldChild) {
-			// 一致する場合
+			// 一致する場合はDOMを再利用しつつ中身を差分更新
 			patch(parent, oldChild, child);
-			oldMap.delete(child.key!);
-
-			if (child.key != null) {
-				// 移動しただけの場合
-				const currentDom = child.dom;
-				const refNode = parent.childNodes[index];
-
-				if (currentDom && refNode && currentDom !== refNode) {
-					// insertBeforeで移動も兼ねる
-					parent.insertBefore(currentDom, refNode);
-				}
-			}
 		} else {
-			// 新規作成が必要
-			const newDom = mount(child, null);
-			if (newDom) {
-				const referenceNode = parent.childNodes[index] || null;
-				parent.insertBefore(newDom, referenceNode);
-			}
+			// 新規作成（DOMは切り離した状態で生成し、配置は後段のplaceChildrenに委ねる）
+			mount(child, null);
 		}
 	});
 
-	// 余りを消す
+	// 2. 対応が付かなかった古い子を削除する
 	oldMap.forEach((child) => {
 		invokeUnmount(child);
-		child.dom?.remove();
+		removeDoms(child);
 	});
 	while (unKeydIndex < oldUnKeyd.length) {
 		const child = oldUnKeyd[unKeydIndex];
 		invokeUnmount(child);
-		child.dom?.remove();
+		removeDoms(child);
 		unKeydIndex++;
+	}
+
+	// 3. newChildrenの順序どおりに実DOMを並べ替える
+	placeChildren(parent, newChildren);
+}
+
+/**
+ * VNodeが親に直接ぶら下げる「トップレベルの実DOMノード」を出現順に収集する
+ * Fragmentは自身のDOMを持たないため、子のDOMを再帰的にたどって集める
+ *
+ * @param vnode - 収集対象のVNode
+ * @param out - 収集結果を書き込む配列（内部用）
+ * @returns 収集された実DOMノードの配列
+ */
+function collectDoms(vnode: VNode, out: (HTMLElement | Text)[] = []): (HTMLElement | Text)[] {
+	if (vnode.type === FRAGMENT) {
+		vnode.children.forEach((child) => collectDoms(child, out));
+	} else if (vnode.dom) {
+		out.push(vnode.dom);
+	}
+	return out;
+}
+
+/**
+ * VNodeが親にぶら下げている実DOMノードを全て取り除く
+ * Fragmentでは複数、通常要素では自身（＝サブツリーごと）が対象になる
+ *
+ * @param vnode - 削除対象のVNode
+ */
+function removeDoms(vnode: VNode) {
+	collectDoms(vnode).forEach((dom) => dom.remove());
+}
+
+/**
+ * newChildrenの順序どおりに実DOMを親要素内へ並べ替える
+ *
+ * 右から左へ insertBefore していくことで、各子（Fragmentなら複数DOM）のまとまりを
+ * 崩さずに正しい順序へ配置する。既に正しい位置にあるノードは動かさない。
+ *
+ * @param parent - 子が展開される実DOM親
+ * @param newChildren - 配置したい順序の子VNode配列
+ */
+function placeChildren(parent: HTMLElement, newChildren: VNode[]) {
+	// ref = 「次に挿入する子の直後に来るべきDOMノード」。末尾はnull（= parentの末尾）
+	let ref: Node | null = null;
+
+	for (let i = newChildren.length - 1; i >= 0; i--) {
+		const doms = collectDoms(newChildren[i]);
+		for (let j = doms.length - 1; j >= 0; j--) {
+			const node = doms[j];
+			// 既に parent 内で ref の直前にあるなら動かさない
+			// （新規マウント直後の切り離されたノードは parentNode が異なるので必ず挿入される）
+			if (node.parentNode !== parent || node.nextSibling !== ref) {
+				parent.insertBefore(node, ref);
+			}
+			ref = node;
+		}
 	}
 }
 
