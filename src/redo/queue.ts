@@ -107,6 +107,45 @@ const scheduleFlush = () => {
 }
 
 /**
+ * 同期イベントハンドラ（ReDoEvent）の型契約はvoidを返すことだが、
+ * 以下のようなケースでは実際にはPromiseを返してしまうことがある（Issue #5）:
+ *   - async関数がswc/babel等によって古いターゲットにトランスパイルされ、
+ *     `handler.constructor.name` が "AsyncFunction" ではなく "Function" になる
+ *     （domeventmanager.ts の isAsync 判定をすり抜ける）
+ *   - `fn.bind()` されたasync関数（bind後は常に constructor.name === "Function"）
+ *
+ * これらのケースでは、本来 runAsync に回るべきハンドラが enqueue経由で
+ * 同期実行され、返り値のPromiseがどこにも追跡されないまま捨てられる。
+ * rejectした場合、それは誰にもcatchされない unhandled rejection になり、
+ * エラーが静かに握り潰される。
+ *
+ * このヘルパーはそのフォールバックとして、同期実行の結果が thenable
+ * （`.then` を持つ値）だった場合にrejectを補足し、unhandled rejectionに
+ * ならないよう console.error で可視化する。
+ *
+ * 注意:
+ * - あくまで最低限の安全網であり、taskTableへの登録やAsyncRouting（success/fail）
+ *   による正式なタスク管理は行わない。非同期処理を書く場合はhandlerをasync関数として
+ *   定義し、正規のrunAsync経路（isAsync判定 or ctx.run）に乗せるのが正道。
+ * - 判定不能なケース（`.then` を持つが標準のPromise仕様に従わない独自オブジェクト等）は
+ *   考慮しない。ここでの thenable 判定は `value != null && typeof value.then === "function"`
+ *   のみで行う（Promises/A+ の最小要件）。
+ *
+ * @param result - 同期イベントハンドラの返り値（本来はvoidのはずの値）
+ */
+const trackStraySyncResult = (result: unknown): void => {
+	if (result != null && typeof (result as PromiseLike<unknown>).then === "function") {
+		Promise.resolve(result as PromiseLike<unknown>).catch((error) => {
+			console.error(
+				"[ReDo] 同期イベントハンドラがPromiseを返しました。async関数のisAsync判定に失敗した可能性があります" +
+				"（トランスパイルやbind()が原因のことがあります）。このPromiseがrejectしたため報告します:",
+				error,
+			);
+		});
+	}
+}
+
+/**
  * イベントキューを実行する
  * - 再入防止: 実行中に新たなイベントが追加されても、次のフレームで処理される
  * - スナップショット方式: 実行中のイベントが新規イベントを追加しても、既存イベントには影響しない
@@ -126,7 +165,9 @@ const flush = () => {
 		// キュー内のイベントを順番に実行
 		for (const item of currentFrame) {
 			const ctx = new EventContext(item.payload);
-			item.event(ctx);
+			const result = item.event(ctx);
+			// 契約上voidのはずだが、Promiseが返ってきた場合はrejectを握り潰さない（Issue #5）
+			trackStraySyncResult(result);
 		}
 	}
 	finally {
