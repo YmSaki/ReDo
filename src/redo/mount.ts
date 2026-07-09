@@ -1,8 +1,9 @@
 // src/redo/mount.ts
 // VNodeから実際のDOM要素を生成する
 
-import { FRAGMENT, TEXT } from "./constants"
+import { BOUNDARY, FRAGMENT, TEXT } from "./constants"
 import { applyAttribute } from "./domattribute";
+import { mountIsland } from "./island";
 import { enqueue } from "./queue";
 import type { VNode } from "./vnode";
 
@@ -23,6 +24,11 @@ export function mount(vnode: VNode | null, parent: HTMLElement | null): HTMLElem
 	if (vnode.type === FRAGMENT) {
 		vnode.children.forEach((child: VNode) => mount(child, parent));
 		return null;
+	}
+
+	// 境界(BOUNDARY)は島を生成する（島の内部はislandが所有する）
+	if (vnode.type === BOUNDARY) {
+		return mountIsland(vnode, parent);
 	}
 
 	// テキストノードを生成
