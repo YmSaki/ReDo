@@ -6,7 +6,7 @@ import { mount } from "./mount";
 import { ComponentProps } from "./props";
 import { enqueue } from "./queue";
 import type { VNode } from "./vnode";
-import { updateEvent } from "./domeventmanager";
+import { applyAttribute } from "./domattribute";
 import { ReDoEvent } from "./event";
 
 /**
@@ -94,7 +94,7 @@ export function patch(
  * @param newProps - 今回の属性
  */
 function patchProps(element: HTMLElement, oldProps: ComponentProps, newProps: ComponentProps) {
-	// 新しい属性を追加/更新
+	// 新しい属性を追加/更新（実際の反映ロジックはmount.tsと共通のapplyAttributeに一本化）
 	for (const key in newProps) {
 		if (key === "children") {
 			continue;
@@ -108,63 +108,16 @@ function patchProps(element: HTMLElement, oldProps: ComponentProps, newProps: Co
 			continue;
 		}
 
-		// イベントハンドラ（onXxx）の差分更新
-		if (key.startsWith("on")) {
-			updateEvent(element, key, oldValue as Function, newValue as Function);
-		} else {
-			element.setAttribute(key, String(newValue));
-		}
-
-		// style属性の差分更新
-		if (key === "style") {
-			if (typeof newValue === "string") {
-				element.style.cssText = newValue;
-			}
-			else if (typeof newValue === "object" && newValue !== null) {
-				if (typeof oldValue === "object" && oldValue !== null) {
-					for (const sKey in oldValue) {
-						// @ts-ignore
-						if (!(sKey in newValue)) element.style[sKey] = "";
-					}
-				}
-
-				// 新しいスタイルを適用
-				for (const sKey in newValue) {
-					// @ts-ignore
-					element.style[sKey] = newValue[sKey];
-				}
-			}
-			continue;
-		}
-
-		// class / className の正規化
-		if (key === "className") {
-			element.setAttribute("class", String(newValue));
-			continue;
-		}
-
-		// それ以外は通常の属性として設定
-		// null/undefined/falseの場合は属性を削除（boolean属性対応）
-		if (newValue == null || newValue === false) {
-			element.removeAttribute(key);
-		} else {
-			// trueの場合は属性名のみ設定（<input disabled />）
-			const attrValue = newValue === true ? "" : String(newValue);
-			element.setAttribute(key, attrValue);
-		}
+		applyAttribute(element, key, oldValue, newValue);
 	}
 
-	// 削除された属性を除去
+	// 削除された属性を除去（newValueにundefinedを渡すことでapplyAttributeに削除させる）
 	for (const key in oldProps) {
 		if (key === "children") {
 			continue;
 		}
 		if (!(key in newProps)) {
-			if (key.startsWith("on")) {
-				updateEvent(element, key, oldProps[key] as Function, undefined);
-			} else {
-				element.removeAttribute(key);
-			}
+			applyAttribute(element, key, oldProps[key], undefined);
 		}
 	}
 }
