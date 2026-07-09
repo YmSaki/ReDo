@@ -16,6 +16,12 @@ export { h, Fragment } from "./h";
 /** リスト要素の自動key付与 */
 export { List } from "./list";
 
+// === 島(island) - 部分再描画 ===
+/** 島の宣言と、島内部だけの再描画 */
+export { island, reRenderIsland } from "./island";
+/** 島ハンドルの型 */
+export type { IslandHandle } from "./island";
+
 // === 型定義のエクスポート ===
 
 export type { Component } from "./component";

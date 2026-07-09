@@ -1,7 +1,9 @@
 // redo/vnode.ts
 // Virtual DOMノードの型定義
 
-import { FRAGMENT, TEXT } from "./constants";
+import { BOUNDARY, FRAGMENT, TEXT } from "./constants";
+import type { Component } from "./component";
+import type { IslandHandle } from "./island";
 import { ReDoLifecycleEventsKey } from "./lifecycle";
 import type { VNodeProps } from "./props";
 
@@ -15,7 +17,7 @@ import type { VNodeProps } from "./props";
  */
 export type VNode = {
 	/// 要素の型（HTML要素名またはシンボル）
-	type: string | typeof FRAGMENT | typeof TEXT;
+	type: string | typeof FRAGMENT | typeof TEXT | typeof BOUNDARY;
 	/// 要素の属性
 	props: VNodeProps;
 	/// 子要素（すべて解決済みのVNode）
@@ -24,4 +26,10 @@ export type VNode = {
 	dom?: HTMLElement | Text;
 	/// key属性
 	key?: string | number;
+	/// 境界(BOUNDARY)ノード用: 島のView関数
+	component?: Component;
+	/// 境界(BOUNDARY)ノード用: 島に渡すprops（親からの自動伝播はしない）
+	boundaryProps?: Record<string, unknown>;
+	/// 境界(BOUNDARY)ノード用: マウント済みの島ハンドル（島の現在状態の唯一の真実）
+	island?: IslandHandle;
 };

@@ -1,8 +1,9 @@
 // src/redo/patch.ts
 // VNode間の差分を検出してDOMを効率的に更新する
 
-import { FRAGMENT, TEXT } from "./constants";
+import { BOUNDARY, FRAGMENT, TEXT } from "./constants";
 import { mount } from "./mount";
+import { unmountIsland } from "./island";
 import { ComponentProps } from "./props";
 import { enqueue } from "./queue";
 import type { VNode } from "./vnode";
@@ -28,8 +29,7 @@ export function patch(
 	// Fragmentは自身のDOMを持たず複数のDOMを親に展開するため、collectDomsで全て取り除く
 	if (!newVNode) {
 		if (oldVNode) {
-			invokeUnmount(oldVNode);
-			removeDoms(oldVNode);
+			removeVNode(oldVNode);
 		}
 		return null;
 	}
@@ -40,17 +40,17 @@ export function patch(
 	}
 
 	// Case 3: Replace - 型が変わった → 要素を置き換え
-	// Fragment ⇔ 通常要素の入れ替えにも耐えるよう、DOMノードのリスト単位で差し替える
+	// Fragment ⇔ 通常要素、境界(BOUNDARY) ⇔ 他 の入れ替えにも耐えるよう、DOMノードのリスト単位で差し替える
 	if (oldVNode.type !== newVNode.type) {
-		invokeUnmount(oldVNode);
-
-		// 新VNodeをマウント（Fragmentなら複数DOM、通常要素なら単一DOMになる）
-		mount(newVNode, null);
-
-		// 旧DOMの先頭位置に新DOMを差し込んでから、旧DOMを取り除く
+		// 旧DOMの先頭位置を先に確保しておく（撤去前）
 		const ref = collectDoms(oldVNode)[0] ?? null;
+
+		// 新VNodeをマウント（Fragmentなら複数DOM、境界なら島を生成、通常要素なら単一DOM）
+		mount(newVNode, null);
 		collectDoms(newVNode).forEach((dom) => parent.insertBefore(dom, ref));
-		removeDoms(oldVNode);
+
+		// 旧を撤去（境界なら島を破棄する）
+		removeVNode(oldVNode);
 
 		invokeUpdate(newVNode);
 		return newVNode.dom ?? null;
@@ -60,6 +60,26 @@ export function patch(
 	if (newVNode.type === FRAGMENT) {
 		patchChildren(parent, oldVNode.children, newVNode.children);
 		return null;
+	}
+
+	// Case 4b: Boundary(島) - 内部は島が所有するため、親の再描画は境界内部に立ち入らない（不透明）
+	if (newVNode.type === BOUNDARY) {
+		const handle = oldVNode.island;
+
+		// 同一のView関数の島 → 内部に一切触れない。ハンドルとDOM参照だけ引き継ぐ。
+		// （親からのprops自動伝播はしない設計なので handle.props は更新しない）
+		if (handle && handle.component === newVNode.component) {
+			newVNode.island = handle;
+			newVNode.dom = handle.oldVNode.dom;
+			return handle.oldVNode.dom ?? null;
+		}
+
+		// 異なるView関数の島 → 古い島を撤去して新しい島に置き換える
+		const ref = collectDoms(oldVNode)[0] ?? null;
+		mount(newVNode, null);
+		collectDoms(newVNode).forEach((dom) => parent.insertBefore(dom, ref));
+		removeVNode(oldVNode);
+		return newVNode.dom ?? null;
 	}
 
 	// Case 4: Update - 同じ要素 → DOM参照を引き継ぐ
@@ -76,6 +96,12 @@ export function patch(
 
 	// Case 6: Update - HTML要素 → 属性と子要素を差分更新
 	patchProps(element, oldVNode.props, newVNode.props);
+
+	// 二重防御: 対象DOMが島ルート(__redoIsland)なら、その内部は島が所有するので子には立ち入らない
+	if ((element as any).__redoIsland) {
+		invokeUpdate(newVNode);
+		return element;
+	}
 
 	// 子要素を再帰的に差分更新
 	patchChildren(element, oldVNode.children, newVNode.children);
@@ -173,13 +199,11 @@ function patchChildren(parent: HTMLElement, oldChildren: VNode[], newChildren: V
 
 	// 2. 対応が付かなかった古い子を削除する
 	oldMap.forEach((child) => {
-		invokeUnmount(child);
-		removeDoms(child);
+		removeVNode(child);
 	});
 	while (unKeydIndex < oldUnKeyd.length) {
 		const child = oldUnKeyd[unKeydIndex];
-		invokeUnmount(child);
-		removeDoms(child);
+		removeVNode(child);
 		unKeydIndex++;
 	}
 
@@ -198,10 +222,31 @@ function patchChildren(parent: HTMLElement, oldChildren: VNode[], newChildren: V
 function collectDoms(vnode: VNode, out: (HTMLElement | Text)[] = []): (HTMLElement | Text)[] {
 	if (vnode.type === FRAGMENT) {
 		vnode.children.forEach((child) => collectDoms(child, out));
+	} else if (vnode.type === BOUNDARY) {
+		// 境界の実DOMは島が所有する。現在の島ルートDOMをハンドル経由で辿る（唯一の真実）
+		const root = vnode.island?.oldVNode.dom ?? vnode.dom;
+		if (root) {
+			out.push(root);
+		}
 	} else if (vnode.dom) {
 		out.push(vnode.dom);
 	}
 	return out;
+}
+
+/**
+ * VNodeサブツリーを撤去する
+ * 境界(BOUNDARY)なら島を破棄し、それ以外は通常のライフサイクル＋DOM撤去を行う。
+ *
+ * @param vnode - 撤去対象のVNode
+ */
+function removeVNode(vnode: VNode) {
+	if (vnode.type === BOUNDARY) {
+		unmountIsland(vnode);
+		return;
+	}
+	invokeUnmount(vnode);
+	removeDoms(vnode);
 }
 
 /**
