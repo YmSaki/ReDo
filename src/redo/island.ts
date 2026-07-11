@@ -7,7 +7,7 @@
 // v1制約:
 // - 島のViewは単一ホスト要素をルートに返すこと。
 //   FRAGMENTルートの島はv1非対応（placeChildrenが親の兄弟と干渉するため）。
-// - 親→島のprops自動伝播なし。
+// - 親→島のprops自動伝播なし。ただし reRenderIsland(component, newProps) で明示的にpropsを更新できる（Issue #12）。
 // - 同一View関数の多重マウント非対応（1つのView関数 ↔ 1マウント の契約）。
 
 import { BOUNDARY } from "./constants";
@@ -27,7 +27,7 @@ import type { VNode } from "./vnode";
 export type IslandHandle = {
 	/// 島のView関数（islandMapのキー）
 	component: Component;
-	/// 島に渡すprops（親からの自動伝播はしない）
+	/// 島に渡すprops（親からの自動伝播はしない。reRenderIsland(component, props)で明示更新可）
 	props: Record<string, unknown>;
 	/// 島内部の解決済みVNode（島だけが所有する差分検出の起点）
 	oldVNode: VNode;
@@ -134,13 +134,25 @@ export function unmountIsland(vnode: VNode): void {
  * component(=コントローラの this.View。インスタンスごとに一意なarrow関数)をキーに探す。
  * 未登録（未マウント / アンマウント済み）なら no-op。
  *
+ * 親からの自動propagationはしない（Case 4bで意図的にhandle.propsを更新しない設計）。
+ * ただし、この関数の第2引数 props を渡すことで明示的にpropsを更新できる。
+ * 省略時は現在の handle.props のまま再描画する（既存の後方互換動作）。
+ *
  * @param component - 島のView関数
+ * @param props - 更新後のprops（省略時は現在のpropsを維持したまま再描画）
  */
-export const reRenderIsland = (component: Component): void => {
+export const reRenderIsland = (
+	component: Component,
+	props?: Record<string, unknown>,
+): void => {
 	const handle = islandMap.get(component);
 	if (!handle) {
 		// 未登録 → no-op（例外は投げない）
 		return;
+	}
+	// props が明示的に渡された場合のみ更新する（省略時は既存のhandle.propsを維持）
+	if (props !== undefined) {
+		handle.props = props;
 	}
 	handle.reRender();
 };
