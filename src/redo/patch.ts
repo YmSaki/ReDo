@@ -292,7 +292,14 @@ function invokeUpdate(vnode: VNode) {
 	}
 }
 
-function invokeUnmount(vnode: VNode) {
+/**
+ * VNodeサブツリーの onUnmount を再帰的に enqueue する
+ * 削除経路（removeVNode）と、島の撤去（island.ts の unmountIsland）から共有する。
+ * 発火は enqueue 経由（マイクロタスク）。
+ *
+ * @param vnode - 撤去対象のVNode（島の場合は島内部の解決済みサブツリー）
+ */
+export function invokeUnmount(vnode: VNode) {
 	if (vnode.props.onUnmount) {
 		enqueue(vnode.props.onUnmount, vnode.dom!);
 	}
