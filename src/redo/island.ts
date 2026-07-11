@@ -14,7 +14,7 @@ import { BOUNDARY } from "./constants";
 import { h } from "./h";
 import { render } from "./render";
 import { mount } from "./mount";
-import { patch } from "./patch";
+import { patch, invokeUnmount } from "./patch";
 import type { Component } from "./component";
 import type { JSXNode } from "./jsx-node";
 import type { VNode } from "./vnode";
@@ -43,14 +43,21 @@ const islandMap = new Map<Component, IslandHandle>();
  *
  * @param component - 島のView関数（インスタンスごとに一意なarrow関数を想定）
  * @param props - 島に渡すprops（省略時は空。親からの自動伝播はしない）
+ * @param key - オプションのkey（keyed listでの並べ替えに島の同一性を持たせる）
  * @returns 境界(BOUNDARY)のJSXNode
  */
 export const island = (
 	component: Component,
 	props?: Record<string, unknown>,
+	key?: string | number,
 ): JSXNode => ({
 	type: BOUNDARY,
-	props: { component, props: props ?? {} },
+	// keyは render.ts の BOUNDARY分岐が node.props.key として拾う（h()のkey取り回しと整合）。
+	// component/props は node.props.component / node.props.props で直接読まれるためkeyと干渉しない。
+	props:
+		key === undefined
+			? { component, props: props ?? {} }
+			: { component, props: props ?? {}, key },
 	children: [],
 });
 
@@ -107,6 +114,11 @@ export function unmountIsland(vnode: VNode): void {
 	if (!handle) {
 		return;
 	}
+
+	// 島ルートDOMを外す前に、島内部サブツリー(handle.oldVNode)の onUnmount を再帰発火する。
+	// 順序は「onUnmount enqueue → DOM除去」。patch.ts の削除経路（invokeUnmount してから remove）と揃える。
+	// invokeUnmount は呼び出し時にのみ参照されるため、island.ts ⇄ patch.ts の循環importでも安全。
+	invokeUnmount(handle.oldVNode);
 
 	// 島ルートは単一ホスト要素なので、ルートDOMを外せばサブツリーごと撤去される
 	const rootDom = handle.oldVNode.dom;
