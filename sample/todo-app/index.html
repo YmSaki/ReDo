@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>ReDo Todo サンプル</title>
+	<style>
+		/* 最小限のスタイル。UI確認のためのシンプルな見た目 */
+		body {
+			font-family: system-ui, sans-serif;
+			max-width: 640px;
+			margin: 40px auto;
+			padding: 0 16px;
+			color: #222;
+		}
+
+		.todo-app h1 {
+			font-size: 1.4rem;
+		}
+
+		.filter-nav {
+			display: flex;
+			gap: 8px;
+			margin-bottom: 16px;
+		}
+
+		.filter-link a {
+			display: inline-block;
+			padding: 4px 10px;
+			border: 1px solid #ccc;
+			border-radius: 6px;
+			text-decoration: none;
+			color: #333;
+		}
+
+		.filter-link.active a {
+			background: #333;
+			color: #fff;
+			border-color: #333;
+		}
+
+		.add-form {
+			display: flex;
+			gap: 8px;
+			margin-bottom: 16px;
+		}
+
+		.add-form input {
+			flex: 1;
+			padding: 6px 8px;
+		}
+
+		.island {
+			border: 1px solid #ddd;
+			border-radius: 8px;
+			padding: 12px;
+			margin-bottom: 12px;
+		}
+
+		.list-toolbar {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 8px;
+			font-size: 0.85rem;
+			color: #666;
+		}
+
+		.todo-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 6px 0;
+			border-bottom: 1px solid #eee;
+		}
+
+		.todo-row .edit-input {
+			flex: 1;
+			padding: 4px 6px;
+		}
+
+		.status {
+			font-size: 0.75rem;
+			min-width: 4.5em;
+			text-align: center;
+			padding: 2px 6px;
+			border-radius: 4px;
+		}
+
+		.status-saving {
+			background: #fff3cd;
+			color: #856404;
+		}
+
+		.status-saved {
+			background: #d4edda;
+			color: #155724;
+		}
+
+		.status-error {
+			background: #f8d7da;
+			color: #721c24;
+		}
+
+		.render-count {
+			font-size: 0.75rem;
+			color: #999;
+		}
+
+		.empty-hint {
+			color: #999;
+			font-size: 0.9rem;
+		}
+
+		.not-found {
+			padding: 20px;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="root"></div>
+
+	<script type="module" src="./main.tsx"></script>
+</body>
+
+</html>
